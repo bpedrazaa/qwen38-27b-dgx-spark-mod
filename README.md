@@ -14,13 +14,16 @@ Qwen3.8-27B is a native vision-language dense model (64 layers, Gated DeltaNet +
 | Item | Value |
 |------|--------|
 | GPU | NVIDIA GB10 (SM121) |
-| Image | `eugr/spark-vllm:latest` |
+| Image | `eugr/spark-vllm:latest` (package default) |
+| Measured runtime | local vLLM **0.26.0** (`qwen3_5` / `Qwen3_5ForConditionalGeneration`) |
 | Quant | `--quantization compressed-tensors` (card) |
 | Attention | FlashInfer (auto) |
 | Context (package) | `--max-model-len 32768` (card allows 262144) |
-| Concurrent | `--max-num-seqs 10` |
+| Concurrent | `--max-num-seqs 10` (**stable 10/10**) |
 | MTP | **off** in package default (safer first boot; checkpoint has `model_mtp.safetensors`) |
 | Port | 8000 |
+
+Release-day note: official BF16 hung on HF Xet; this package uses the Unsloth NVFP4 checkpoint that actually fits a 121 GiB GB10.
 
 ## Quick start
 
@@ -52,14 +55,20 @@ Reasoning field: vLLM `qwen3` parser. Clients can set `chat_template_kwargs.enab
 ## Measured benchmarks (this host)
 
 Streaming chat, `max_tokens=256`, levels 1/4/10, thinking tokens counted via usage when present.
+Host: ASUS Ascent GX10 / NVIDIA GB10. Runtime: local vLLM `0.26.0`, NVFP4 via `compressed-tensors`, thinking on (default). Date: 2026-08-14.
 
 | Conc | OK | Avg TTFT | Aggregate tok/s | Per-stream tok/s |
 |-----:|---:|---------:|----------------:|-----------------:|
-| 1 | TBD | TBD | TBD | TBD |
-| 4 | TBD | TBD | TBD | TBD |
-| 10 | TBD | TBD | TBD | TBD |
+| 1 | 1/1 | 0.13s | **10.8** | 10.8 |
+| 4 | 4/4 | 0.28s | **40.3** | 10.1 |
+| 10 | 10/10 | 0.51s | **92.0** | 9.2 |
 
-Raw: [`bench_results.json`](./bench_results.json) (filled after the release-day run)
+- **Warm single-stream headline:** ~**11 tok/s**
+- **10 concurrent:** **10/10 stable**, ~**92 aggregate tok/s**
+- Bench prompt was technical; streams spent budget in `reasoning` (content empty at short cap) — tok/s still from `completion_tokens`
+- Coherence sample (thinking off): `Hello!`
+
+Raw: [`bench_results.json`](./bench_results.json)
 
 ## Exact serve command (package default)
 
@@ -88,7 +97,8 @@ vllm serve /models/qwen38-27b-nvfp4 \
 2. **Dense 27B ≠ 35B-A3B MoE** — do not copy Marlin MoE flags from the sibling package.
 3. **Official BF16 is ~52 GiB** and will not leave enough unified-memory headroom on a 121 GiB GB10. Use this NVFP4 checkpoint.
 4. **Qwen3.8 is a VLM.** `--language-model-only` is the default to maximize KV-cache headroom for text. Set `LANGUAGE_ONLY=0` only after you confirm vision tensors fit.
-5. Optional later: enable MTP only after a stable non-MTP serve is proven on your box.
+5. **Local vLLM 0.26.0 needs `ninja` on PATH** for FlashInfer sampling JIT (`apt install ninja-build`). Without it the engine dies after compile during warmup.
+6. Optional later: enable MTP only after a stable non-MTP serve is proven on your box.
 
 ## Files
 
