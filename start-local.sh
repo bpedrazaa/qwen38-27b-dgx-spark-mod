@@ -3,12 +3,14 @@ set -euo pipefail
 MODEL_DIR="${MODEL_DIR:-$HOME/llm/qwen38-27b-nvfp4}"
 MODEL_ID="${MODEL_ID:-unsloth/Qwen3.8-27B-NVFP4}"
 PORT="${PORT:-8000}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-10}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.70}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
 ENABLE_MTP="${ENABLE_MTP:-1}"
 NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-3}"
+LIMIT_MM_PER_PROMPT="${LIMIT_MM_PER_PROMPT:-{\"image\":4,\"video\":1}}"
+MEDIA_IO_KWARGS="${MEDIA_IO_KWARGS:-{\"video\":{\"num_frames\":-1}}}"
 VLLM_BIN="${VLLM_BIN:-$HOME/venvs/vllm-026/bin/vllm}"
 LOG="${LOG:-$HOME/qwen38-vllm.log}"
 PIDFILE="${PIDFILE:-$HOME/qwen38-vllm.pid}"
@@ -36,7 +38,6 @@ fi
 nohup "$VLLM_BIN" serve "$MODEL_DIR" \
   --served-model-name "$MODEL_ID" \
   --host 0.0.0.0 --port "$PORT" \
-  --language-model-only \
   --tensor-parallel-size 1 \
   --trust-remote-code \
   --quantization compressed-tensors \
@@ -49,7 +50,9 @@ nohup "$VLLM_BIN" serve "$MODEL_DIR" \
   --reasoning-parser qwen3 \
   --tool-call-parser qwen3_coder \
   --enable-auto-tool-choice \
+  --limit-mm-per-prompt "$LIMIT_MM_PER_PROMPT" \
+  --media-io-kwargs "$MEDIA_IO_KWARGS" \
   "${SPEC_ARGS[@]}" \
   > "$LOG" 2>&1 &
 echo $! > "$PIDFILE"
-echo "PID $(cat "$PIDFILE"), log $LOG, MTP=${ENABLE_MTP} k=${NUM_SPECULATIVE_TOKENS}"
+echo "PID $(cat "$PIDFILE"), log $LOG, ctx=${MAX_MODEL_LEN}, vision=on, MTP=${ENABLE_MTP} k=${NUM_SPECULATIVE_TOKENS}"

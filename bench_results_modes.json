@@ -1,0 +1,206 @@
+{
+  "model": "unsloth/Qwen3.8-27B-NVFP4",
+  "base_url": "http://127.0.0.1:8000",
+  "prompt": "Write a concise technical explanation of what NVFP4 quantization is and why it helps dense Transformer inference on NVIDIA GB10. Use plain language. Keep the final answer under 120 words.",
+  "max_tokens": 4096,
+  "started_unix": 1786728697.95987,
+  "modes": {
+    "off": [
+      {
+        "mode": "off",
+        "concurrency": 1,
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "avg_ttft_s": 0.2890550750307739,
+        "avg_total_s": 9.088727589230984,
+        "avg_tok_per_s_per_stream": 16.944065985922045,
+        "aggregate_tok_per_s": 16.944065985922045,
+        "avg_completion_tokens": 154.0,
+        "avg_content_chars": 819.0,
+        "avg_reasoning_chars": 0.0,
+        "finish_reasons": [
+          "stop"
+        ],
+        "sampler": {
+          "temperature": 0.7,
+          "top_p": 0.8,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 1.5,
+          "repetition_penalty": 1.0
+        },
+        "enable_thinking": false,
+        "reasoning_effort": null,
+        "errors": [],
+        "runs": [
+          {
+            "mode": "off",
+            "concurrency": 1,
+            "worker_id": 0,
+            "ok": true,
+            "status": 200,
+            "ttft_s": 0.2890550750307739,
+            "total_s": 9.088727589230984,
+            "completion_tokens": 154,
+            "prompt_tokens": 53,
+            "tok_per_s": 16.944065985922045,
+            "content_chars": 819,
+            "reasoning_chars": 0,
+            "finish_reason": "stop",
+            "error": null
+          }
+        ],
+        "wall_s": 9.090463373810053
+      }
+    ],
+    "low": [
+      {
+        "mode": "low",
+        "concurrency": 1,
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "avg_ttft_s": 0.2867728001438081,
+        "avg_total_s": 20.456169674172997,
+        "avg_tok_per_s_per_stream": 19.260692802008087,
+        "aggregate_tok_per_s": 19.260692802008087,
+        "avg_completion_tokens": 394.0,
+        "avg_content_chars": 673.0,
+        "avg_reasoning_chars": 1149.0,
+        "finish_reasons": [
+          "stop"
+        ],
+        "sampler": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 0.0,
+          "repetition_penalty": 1.0
+        },
+        "enable_thinking": true,
+        "reasoning_effort": "low",
+        "errors": [],
+        "runs": [
+          {
+            "mode": "low",
+            "concurrency": 1,
+            "worker_id": 0,
+            "ok": true,
+            "status": 200,
+            "ttft_s": 0.2867728001438081,
+            "total_s": 20.456169674172997,
+            "completion_tokens": 394,
+            "prompt_tokens": 81,
+            "tok_per_s": 19.260692802008087,
+            "content_chars": 673,
+            "reasoning_chars": 1149,
+            "finish_reason": "stop",
+            "error": null
+          }
+        ],
+        "wall_s": 20.45762540725991
+      }
+    ],
+    "medium": [
+      {
+        "mode": "medium",
+        "concurrency": 1,
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "avg_ttft_s": 0.35425664111971855,
+        "avg_total_s": 69.98955405596644,
+        "avg_tok_per_s_per_stream": 23.489219529608548,
+        "aggregate_tok_per_s": 23.489219529608548,
+        "avg_completion_tokens": 1644.0,
+        "avg_content_chars": 759.0,
+        "avg_reasoning_chars": 5034.0,
+        "finish_reasons": [
+          "stop"
+        ],
+        "sampler": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 0.0,
+          "repetition_penalty": 1.0
+        },
+        "enable_thinking": true,
+        "reasoning_effort": "medium",
+        "errors": [],
+        "runs": [
+          {
+            "mode": "medium",
+            "concurrency": 1,
+            "worker_id": 0,
+            "ok": true,
+            "status": 200,
+            "ttft_s": 0.35425664111971855,
+            "total_s": 69.98955405596644,
+            "completion_tokens": 1644,
+            "prompt_tokens": 51,
+            "tok_per_s": 23.489219529608548,
+            "content_chars": 759,
+            "reasoning_chars": 5034,
+            "finish_reason": "stop",
+            "error": null
+          }
+        ],
+        "wall_s": 69.99113903800026
+      }
+    ],
+    "xhigh": [
+      {
+        "mode": "xhigh",
+        "concurrency": 1,
+        "requested": 1,
+        "succeeded": 1,
+        "failed": 0,
+        "avg_ttft_s": 0.2794420658610761,
+        "avg_total_s": 36.49916983162984,
+        "avg_tok_per_s_per_stream": 22.027898270257673,
+        "aggregate_tok_per_s": 22.027898270257673,
+        "avg_completion_tokens": 804.0,
+        "avg_content_chars": 599.0,
+        "avg_reasoning_chars": 2391.0,
+        "finish_reasons": [
+          "stop"
+        ],
+        "sampler": {
+          "temperature": 1.0,
+          "top_p": 0.95,
+          "top_k": 20,
+          "min_p": 0.0,
+          "presence_penalty": 0.0,
+          "repetition_penalty": 1.0
+        },
+        "enable_thinking": true,
+        "reasoning_effort": "xhigh",
+        "errors": [],
+        "runs": [
+          {
+            "mode": "xhigh",
+            "concurrency": 1,
+            "worker_id": 0,
+            "ok": true,
+            "status": 200,
+            "ttft_s": 0.2794420658610761,
+            "total_s": 36.49916983162984,
+            "completion_tokens": 804,
+            "prompt_tokens": 93,
+            "tok_per_s": 22.027898270257673,
+            "content_chars": 599,
+            "reasoning_chars": 2391,
+            "finish_reason": "stop",
+            "error": null
+          }
+        ],
+        "wall_s": 36.50067144492641
+      }
+    ]
+  },
+  "finished_unix": 1786728834.0000813
+}

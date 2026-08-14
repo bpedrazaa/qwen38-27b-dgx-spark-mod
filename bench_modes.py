@@ -1,8 +1,15 @@
 #!/usr/bin/env python3
-"""Concurrent chat completion benchmark for vLLM OpenAI API (sparkrun-ship).
+"""Four-mode official-sampling bench for Qwen3.8-27B on a live vLLM server.
 
-Measures TTFT + completion tok/s for concurrency levels (default 1,4,10).
-Uses stream=true so TTFT is real first-token latency (content or reasoning).
+Modes from the model card:
+  thinking off  + instruct sampler
+  thinking xhigh / medium / low + thinking sampler
+
+Official sampling:
+  Thinking:  temperature=1.0, top_p=0.95, top_k=20, min_p=0.0,
+             presence_penalty=0.0, repetition_penalty=1.0
+  Instruct:  temperature=0.7, top_p=0.80, top_k=20, min_p=0.0,
+             presence_penalty=1.5, repetition_penalty=1.0
 """
 from __future__ import annotations
 
@@ -16,16 +23,57 @@ from typing import Any
 
 import urllib.request
 
-
 PROMPT = (
     "Write a concise technical explanation of what NVFP4 quantization is "
-    "and why it helps MoE inference on NVIDIA GB10. Use plain language. "
-    "Keep the final answer under 120 words."
+    "and why it helps dense Transformer inference on NVIDIA GB10. "
+    "Use plain language. Keep the final answer under 120 words."
 )
+
+THINKING_SAMPLER = {
+    "temperature": 1.0,
+    "top_p": 0.95,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+
+INSTRUCT_SAMPLER = {
+    "temperature": 0.7,
+    "top_p": 0.80,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+}
+
+MODES = {
+    "off": {
+        "enable_thinking": False,
+        "reasoning_effort": None,
+        "sampler": INSTRUCT_SAMPLER,
+    },
+    "low": {
+        "enable_thinking": True,
+        "reasoning_effort": "low",
+        "sampler": THINKING_SAMPLER,
+    },
+    "medium": {
+        "enable_thinking": True,
+        "reasoning_effort": "medium",
+        "sampler": THINKING_SAMPLER,
+    },
+    "xhigh": {
+        "enable_thinking": True,
+        "reasoning_effort": "xhigh",
+        "sampler": THINKING_SAMPLER,
+    },
+}
 
 
 @dataclass
 class RunResult:
+    mode: str
     concurrency: int
     worker_id: int
     ok: bool
@@ -37,6 +85,7 @@ class RunResult:
     tok_per_s: float | None
     content_chars: int
     reasoning_chars: int
+    finish_reason: str | None
     error: str | None
 
 
@@ -44,28 +93,37 @@ def one_request(
     *,
     base_url: str,
     model: str,
+    mode: str,
     max_tokens: int,
-    temperature: float,
     timeout: float,
     concurrency: int,
     worker_id: int,
+    prompt: str,
 ) -> RunResult:
+    cfg = MODES[mode]
+    sampler = cfg["sampler"]
     url = base_url.rstrip("/") + "/v1/chat/completions"
-    body = {
+    chat_template_kwargs: dict[str, Any] = {
+        "enable_thinking": bool(cfg["enable_thinking"]),
+        "preserve_thinking": True,
+    }
+    body: dict[str, Any] = {
         "model": model,
-        "messages": [{"role": "user", "content": PROMPT}],
+        "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
-        "temperature": temperature,
-        "top_p": 0.95,
-        "presence_penalty": 0.0,
-        "top_k": 20,
-        "min_p": 0.0,
-        "repetition_penalty": 1.0,
-        "reasoning_effort": "xhigh",
-        "chat_template_kwargs": {"enable_thinking": True, "preserve_thinking": True},
+        "temperature": sampler["temperature"],
+        "top_p": sampler["top_p"],
+        "presence_penalty": sampler["presence_penalty"],
+        "top_k": sampler["top_k"],
+        "min_p": sampler["min_p"],
+        "repetition_penalty": sampler["repetition_penalty"],
+        "chat_template_kwargs": chat_template_kwargs,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if cfg["reasoning_effort"]:
+        body["reasoning_effort"] = cfg["reasoning_effort"]
+
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -80,6 +138,7 @@ def one_request(
     reasoning_chars = 0
     completion_tokens = None
     prompt_tokens = None
+    finish_reason = None
     status = None
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -98,14 +157,17 @@ def one_request(
                     chunk = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                if "usage" in chunk and chunk["usage"]:
+                if chunk.get("usage"):
                     usage = chunk["usage"]
                     completion_tokens = usage.get("completion_tokens")
                     prompt_tokens = usage.get("prompt_tokens")
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue
-                delta = choices[0].get("delta") or {}
+                choice = choices[0]
+                if choice.get("finish_reason"):
+                    finish_reason = choice["finish_reason"]
+                delta = choice.get("delta") or {}
                 c = delta.get("content") or ""
                 r = delta.get("reasoning") or delta.get("reasoning_content") or ""
                 if (c or r) and ttft is None:
@@ -118,6 +180,7 @@ def one_request(
             completion_tokens = est
         tok_s = (completion_tokens / total) if total > 0 else None
         return RunResult(
+            mode=mode,
             concurrency=concurrency,
             worker_id=worker_id,
             ok=True,
@@ -129,11 +192,13 @@ def one_request(
             tok_per_s=tok_s,
             content_chars=content_chars,
             reasoning_chars=reasoning_chars,
+            finish_reason=finish_reason,
             error=None,
         )
     except Exception as e:  # noqa: BLE001
         total = time.perf_counter() - t0
         return RunResult(
+            mode=mode,
             concurrency=concurrency,
             worker_id=worker_id,
             ok=False,
@@ -145,19 +210,17 @@ def one_request(
             tok_per_s=None,
             content_chars=content_chars,
             reasoning_chars=reasoning_chars,
+            finish_reason=finish_reason,
             error=f"{type(e).__name__}: {e}",
         )
 
 
-def summarize(level: int, runs: list[RunResult]) -> dict[str, Any]:
+def summarize(mode: str, level: int, runs: list[RunResult]) -> dict[str, Any]:
     ok = [r for r in runs if r.ok]
     fails = [r for r in runs if not r.ok]
 
     def avg(xs: list[float]) -> float | None:
         return statistics.mean(xs) if xs else None
-
-    def p50(xs: list[float]) -> float | None:
-        return statistics.median(xs) if xs else None
 
     ttfts = [r.ttft_s for r in ok if r.ttft_s is not None]
     totals = [r.total_s for r in ok if r.total_s is not None]
@@ -167,19 +230,23 @@ def summarize(level: int, runs: list[RunResult]) -> dict[str, Any]:
     aggregate_tps = None
     if ok and wall > 0 and all(r.completion_tokens is not None for r in ok):
         aggregate_tps = sum(r.completion_tokens or 0 for r in ok) / wall
-
     return {
+        "mode": mode,
         "concurrency": level,
         "requested": len(runs),
         "succeeded": len(ok),
         "failed": len(fails),
         "avg_ttft_s": avg(ttfts),
-        "p50_ttft_s": p50(ttfts),
         "avg_total_s": avg(totals),
-        "p50_total_s": p50(totals),
         "avg_tok_per_s_per_stream": avg(tps),
         "aggregate_tok_per_s": aggregate_tps,
         "avg_completion_tokens": avg([float(x) for x in comps]) if comps else None,
+        "avg_content_chars": avg([float(r.content_chars) for r in ok]) if ok else None,
+        "avg_reasoning_chars": avg([float(r.reasoning_chars) for r in ok]) if ok else None,
+        "finish_reasons": [r.finish_reason for r in ok],
+        "sampler": MODES[mode]["sampler"],
+        "enable_thinking": MODES[mode]["enable_thinking"],
+        "reasoning_effort": MODES[mode]["reasoning_effort"],
         "errors": [r.error for r in fails],
         "runs": [asdict(r) for r in runs],
     }
@@ -189,12 +256,13 @@ def run_level(
     *,
     base_url: str,
     model: str,
+    mode: str,
     level: int,
     max_tokens: int,
-    temperature: float,
     timeout: float,
+    prompt: str,
 ) -> dict[str, Any]:
-    print(f"\n=== concurrency={level} ===", flush=True)
+    print(f"\n=== mode={mode} concurrency={level} ===", flush=True)
     t_wall0 = time.perf_counter()
     results: list[RunResult] = []
     with ThreadPoolExecutor(max_workers=level) as ex:
@@ -203,11 +271,12 @@ def run_level(
                 one_request,
                 base_url=base_url,
                 model=model,
+                mode=mode,
                 max_tokens=max_tokens,
-                temperature=temperature,
                 timeout=timeout,
                 concurrency=level,
                 worker_id=i,
+                prompt=prompt,
             )
             for i in range(level)
         ]
@@ -221,13 +290,13 @@ def run_level(
             print(
                 f"  worker {r.worker_id}: {status} "
                 f"ttft={ttft_s}s total={total_s}s tok/s={tps} "
-                f"comp_tok={r.completion_tokens} "
+                f"comp_tok={r.completion_tokens} finish={r.finish_reason} "
                 f"reason_chars={r.reasoning_chars} content_chars={r.content_chars}"
                 + (f" err={r.error}" if r.error else ""),
                 flush=True,
             )
     results.sort(key=lambda r: r.worker_id)
-    summary = summarize(level, results)
+    summary = summarize(mode, level, results)
     summary["wall_s"] = time.perf_counter() - t_wall0
     return summary
 
@@ -236,78 +305,66 @@ def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--base-url", default="http://127.0.0.1:8000")
     p.add_argument("--model", default="unsloth/Qwen3.8-27B-NVFP4")
-    p.add_argument("--levels", default="1,4,10")
-    p.add_argument("--max-tokens", type=int, default=256)
-    p.add_argument("--temperature", type=float, default=1.0)
-    p.add_argument("--timeout", type=float, default=300.0)
+    p.add_argument("--modes", default="off,low,medium,xhigh")
+    p.add_argument("--levels", default="1")
+    p.add_argument("--max-tokens", type=int, default=4096)
+    p.add_argument("--timeout", type=float, default=900.0)
     p.add_argument("--warmup", type=int, default=1)
-    p.add_argument("--out", default="bench_results.json")
+    p.add_argument("--out", default="bench_results_modes.json")
+    p.add_argument("--prompt", default=PROMPT)
     args = p.parse_args()
 
-    levels = [int(x.strip()) for x in args.levels.split(",") if x.strip()]
-    models_url = args.base_url.rstrip("/") + "/v1/models"
-    with urllib.request.urlopen(models_url, timeout=10) as resp:
-        models = json.loads(resp.read().decode())
-    print("models:", json.dumps(models)[:300], flush=True)
+    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+    levels = [int(x) for x in args.levels.split(",") if x.strip()]
+    for m in modes:
+        if m not in MODES:
+            raise SystemExit(f"unknown mode {m}; choose from {list(MODES)}")
 
-    if args.warmup > 0:
-        print(f"warmup x{args.warmup}", flush=True)
+    if args.warmup:
+        print(f"warmup x{args.warmup} (thinking off)", flush=True)
         for i in range(args.warmup):
             r = one_request(
                 base_url=args.base_url,
                 model=args.model,
-                max_tokens=min(64, args.max_tokens),
-                temperature=args.temperature,
-                timeout=args.timeout,
+                mode="off",
+                max_tokens=64,
+                timeout=min(args.timeout, 180.0),
                 concurrency=1,
                 worker_id=i,
+                prompt="Reply with the single word ready.",
             )
             print(
-                f"  warmup {i}: ok={r.ok} ttft={r.ttft_s} total={r.total_s} err={r.error}",
+                f"  warmup {i}: {'OK' if r.ok else 'FAIL'} "
+                f"comp={r.completion_tokens} content={r.content_chars} err={r.error}",
                 flush=True,
             )
 
-    report: dict[str, Any] = {
-        "base_url": args.base_url,
+    payload: dict[str, Any] = {
         "model": args.model,
+        "base_url": args.base_url,
+        "prompt": args.prompt,
         "max_tokens": args.max_tokens,
-        "temperature": args.temperature,
-        "levels": levels,
-        "prompt": PROMPT,
-        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "results": [],
+        "started_unix": time.time(),
+        "modes": {},
     }
-    for level in levels:
-        report["results"].append(
-            run_level(
-                base_url=args.base_url,
-                model=args.model,
-                level=level,
-                max_tokens=args.max_tokens,
-                temperature=args.temperature,
-                timeout=args.timeout,
+    for mode in modes:
+        payload["modes"][mode] = []
+        for level in levels:
+            payload["modes"][mode].append(
+                run_level(
+                    base_url=args.base_url,
+                    model=args.model,
+                    mode=mode,
+                    level=level,
+                    max_tokens=args.max_tokens,
+                    timeout=args.timeout,
+                    prompt=args.prompt,
+                )
             )
-        )
-
+    payload["finished_unix"] = time.time()
     with open(args.out, "w", encoding="utf-8") as f:
-        json.dump(report, f, indent=2)
-    print(f"\nWrote {args.out}", flush=True)
-    for s in report["results"]:
-        print(
-            json.dumps(
-                {
-                    "concurrency": s["concurrency"],
-                    "succeeded": s["succeeded"],
-                    "failed": s["failed"],
-                    "avg_ttft_s": s["avg_ttft_s"],
-                    "aggregate_tok_per_s": s["aggregate_tok_per_s"],
-                    "avg_tok_per_s_per_stream": s["avg_tok_per_s_per_stream"],
-                    "wall_s": s["wall_s"],
-                    "errors": s["errors"],
-                },
-                indent=2,
-            )
-        )
+        json.dump(payload, f, indent=2)
+    print(f"\nwrote {args.out}", flush=True)
     return 0
 
 
