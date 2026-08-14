@@ -1,49 +1,44 @@
-# unsloth/Qwen3.8-27B-NVFP4 on DGX Spark (GB10)
+# Qwen 3.8 27B on DGX Spark
 
-**Deployment package only** — not new weights.
-**HF:** [unsloth/Qwen3.8-27B-NVFP4](https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4) (Unsloth Dynamic V3 NVFP4 of [Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B))
-**Host tested:** ASUS Ascent GX10 / NVIDIA GB10 (aarch64), 2026-08-14
+Run [Qwen 3.8 27B](https://huggingface.co/Qwen/Qwen3.8-27B) on a single NVIDIA GB10 using the [Unsloth NVFP4](https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4) checkpoint and vLLM.
 
-This is a **model-specific** recipe for the dense 27B NVFP4 checkpoint.
-Do **not** reuse the 35B-A3B MoE package flags (`--moe-backend marlin`, etc.).
+This repo is a deploy package: start/stop scripts, a measured serve command, and GB10 benchmarks. It does not republish model weights.
 
-Qwen3.8-27B is a native vision-language dense model (64 layers, Gated DeltaNet + gated attention, 262K native context, MTP-trained). The BF16 card is ~52 GiB; this package uses the Unsloth NVFP4 quant (~22.5 GiB weights + 0.81 GiB MTP) so a single GB10 can actually serve it.
+Qwen 3.8 27B is a dense 27B hybrid model (Gated DeltaNet + full attention, 262K native context, trained with MTP). The official BF16 checkpoint is about 52 GiB and is a poor fit for 121 GiB of unified memory. The Unsloth NVFP4 build is about 22.5 GiB plus 0.81 GiB of MTP weights, which leaves room for context, batching, and speculation.
 
-## Hardware / runtime
+## Defaults
 
 | Item | Value |
 |------|--------|
-| GPU | NVIDIA GB10 (SM121) |
-| Image | `eugr/spark-vllm:latest` (package default) |
-| Measured runtime | local vLLM **0.26.0** (`Qwen3_5MTP`) |
-| Quant | `--quantization compressed-tensors` (card) |
-| Attention | FlashInfer (auto) |
-| Context (package) | `--max-model-len 32768` (card allows 262144) |
-| Concurrent | `--max-num-seqs 10` (**stable 10/10**) |
-| MTP | **on** — `--speculative-config '{"method":"mtp","num_speculative_tokens":3}'` |
+| GPU | NVIDIA GB10 |
+| Image | `eugr/spark-vllm:latest` |
+| Measured runtime | vLLM 0.26.0 |
+| Quantization | `compressed-tensors` (NVFP4) |
+| Context | `--max-model-len 32768` |
+| Concurrency | `--max-num-seqs 10` |
+| Speculative decoding | MTP, `k=3` |
 | Port | 8000 |
 
-Release-day note: official BF16 hung on HF Xet; this package uses the Unsloth NVFP4 checkpoint that actually fits a 121 GiB GB10.
-
-Disable MTP only if you want the safer first-boot path: `ENABLE_MTP=0 ./start.sh`.
+To start without MTP: `ENABLE_MTP=0 ./start.sh`.
 
 ## Quick start
 
 ```bash
-# optional: pre-download
 hf download unsloth/Qwen3.8-27B-NVFP4 --local-dir ~/llm/qwen38-27b-nvfp4
 
 ./start.sh
-# overrides: MAX_NUM_SEQS=1 MAX_MODEL_LEN=16384 ENABLE_MTP=0 ./start.sh
+# optional overrides:
+# MAX_NUM_SEQS=1 MAX_MODEL_LEN=16384 ENABLE_MTP=0 ./start.sh
 ./stop.sh
 ```
 
-On this host the measured serve was local vLLM 0.26.0 via `./start-local.sh` (same flags).
+`./start.sh` pulls `eugr/spark-vllm:latest` and serves the model in Docker. If you already have vLLM 0.26.0 on the host, `./start-local.sh` uses the same flags.
 
-Smoke:
+Smoke test:
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/models | head
+curl -s http://127.0.0.1:8000/v1/models
+
 curl -s http://127.0.0.1:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
@@ -54,40 +49,39 @@ curl -s http://127.0.0.1:8000/v1/chat/completions \
   }'
 ```
 
-Reasoning field: vLLM `qwen3` parser. Clients can set `chat_template_kwargs.enable_thinking`.
+Thinking is on by default. Disable it with `chat_template_kwargs.enable_thinking = false`. The serve command enables the vLLM `qwen3` reasoning parser.
 
-## Measured benchmarks (this host)
+## Benchmarks
 
-Streaming chat, `max_tokens=256`, levels 1/4/10, thinking tokens counted via usage when present.
-Host: ASUS Ascent GX10 / NVIDIA GB10. Runtime: local vLLM `0.26.0`, NVFP4 via `compressed-tensors`, thinking on (default). Date: 2026-08-14.
+Measured on an ASUS Ascent GX10 / NVIDIA GB10, 2026-08-14.
 
-### MTP on (package default, k=3)
+Streaming chat completions, `max_tokens=256`, thinking on. Throughput uses `completion_tokens`. Runtime: vLLM 0.26.0, NVFP4 via `compressed-tensors`.
 
-| Conc | OK | Avg TTFT | Aggregate tok/s | Per-stream tok/s |
-|-----:|---:|---------:|----------------:|-----------------:|
+### MTP on (default, k=3)
+
+| Concurrent | Success | Avg TTFT | Aggregate tok/s | Per-stream tok/s |
+|-----------:|--------:|---------:|----------------:|-----------------:|
 | 1 | 1/1 | 0.27s | **19.6** | 19.6 |
 | 4 | 4/4 | 1.48s | **67.5** | 17.3 |
 | 10 | 10/10 | 1.05s | **131.9** | 14.8 |
 
-- **Warm single-stream headline:** ~**20 tok/s**
-- **10 concurrent:** **10/10 stable**, ~**132 aggregate tok/s**
-- **MTP accept:** ~**54%** of draft tokens (`2418/4461` after subtracting the smoke request; vLLM end counters 4464 draft / 2419 accepted). Per-position accepts: p0=1114, p1=796, p2=509.
-- Bench prompt was technical; streams spent budget in `reasoning` (content empty at short cap) — tok/s still from `completion_tokens`
-- Coherence sample (thinking off): `Hello!`
+- Single stream: **~20 tok/s**
+- 10 concurrent: **10/10 stable**, **~132 tok/s** aggregate
+- MTP acceptance: **~54%** (2418 / 4461 draft tokens)
 
-### MTP off (same host, earlier same day)
+### MTP off
 
-| Conc | OK | Avg TTFT | Aggregate tok/s | Per-stream tok/s |
-|-----:|---:|---------:|----------------:|-----------------:|
+| Concurrent | Success | Avg TTFT | Aggregate tok/s | Per-stream tok/s |
+|-----------:|--------:|---------:|----------------:|-----------------:|
 | 1 | 1/1 | 0.13s | 10.8 | 10.8 |
 | 4 | 4/4 | 0.28s | 40.3 | 10.1 |
 | 10 | 10/10 | 0.51s | 92.0 | 9.2 |
 
-MTP is the speed lever: **+82%** single-stream (10.8 → 19.6), **+43%** at 10-wide aggregate (92.0 → 131.9). TTFT is a bit worse with speculation on.
+MTP is the speed lever: **+82%** single-stream (10.8 → 19.6 tok/s) and **+43%** at 10-wide (92.0 → 131.9 tok/s). Time to first token is a bit higher with speculation enabled.
 
-Raw: [`bench_results.json`](./bench_results.json) (MTP on). MTP-off snapshot: [`bench_results_mtp_off.json`](./bench_results_mtp_off.json).
+Raw results: [`bench_results.json`](./bench_results.json) (MTP on), [`bench_results_mtp_off.json`](./bench_results_mtp_off.json).
 
-## Exact serve command (package default)
+## Serve command
 
 ```bash
 vllm serve /models/qwen38-27b-nvfp4 \
@@ -109,28 +103,27 @@ vllm serve /models/qwen38-27b-nvfp4 \
   --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
 ```
 
-vLLM 0.26.0 resolves the draft as `Qwen3_5MTP` from `text_config.mtp_num_hidden_layers=1` and `model_mtp.safetensors`. `qwen3_5_mtp` is accepted as an alias but is deprecated in favor of `method=mtp`.
+vLLM loads the native MTP head from `model_mtp.safetensors`.
 
-## Pitfalls (GB10)
+## Notes
 
-1. **FlashInfer first-boot autotune can wedge the host** (SSH TCP open, banner hangs, `:8000` refused). Prefer minimal first boot (`MAX_NUM_SEQS=1`, modest ctx), poll API from another machine, escalate console/reboot if hung >~10 min.
-2. **Dense 27B ≠ 35B-A3B MoE** — do not copy Marlin MoE flags from the sibling package.
-3. **Official BF16 is ~52 GiB** and will not leave enough unified-memory headroom on a 121 GiB GB10. Use this NVFP4 checkpoint.
-4. **Qwen3.8 is a VLM.** `--language-model-only` is the default to maximize KV-cache headroom for text. Set `LANGUAGE_ONLY=0` only after you confirm vision tensors fit.
-5. **Local vLLM 0.26.0 needs `ninja` on PATH** for FlashInfer sampling JIT (`apt install ninja-build`). Without it the engine dies after compile during warmup.
-6. **MTP k>1 reuses the single trained MTP layer.** vLLM warns this can lower acceptance vs k=1. Measured k=3 still beat MTP-off by a wide margin (~54% accept).
-7. Need mostly free GB10 memory before launch. This box had ~89 GiB free after stopping the previous serve.
+- **Use the NVFP4 checkpoint.** Official BF16 is ~52 GiB and does not leave enough unified-memory headroom on a 121 GiB GB10.
+- **First boot can take several minutes.** FlashInfer / Triton compile and autotune on the first launch. If the API is not up after ~10 minutes, check `docker logs` (or the local vLLM log) before assuming it hung.
+- **Host vLLM needs `ninja`.** FlashInfer's sampling JIT fails during warmup unless `ninja-build` is on `PATH` (`sudo apt install ninja-build`).
+- **This is a VLM served as text-only.** `--language-model-only` is the default so more memory stays available for KV cache. Set `LANGUAGE_ONLY=0` only if you need vision and have confirmed the extra tensors fit.
+- **MTP `k=3` reuses one trained draft layer.** vLLM may warn that acceptance can be lower than `k=1`. Measured `k=3` still beat MTP-off by a wide margin.
+- The GPU should be mostly free before launch.
 
 ## Files
 
 | File | Role |
 |------|------|
-| `start.sh` / `stop.sh` | download + docker serve + health poll (MTP on by default) |
-| `start-local.sh` / `stop-local.sh` | host vLLM 0.26.0 path used for the measured numbers |
-| `bench_concurrent.py` | streaming 1/4/10 bench |
-| `bench_results.json` | measured MTP-on numbers from tux |
-| `bench_results_mtp_off.json` | same-day MTP-off baseline |
+| `start.sh` / `stop.sh` | Download + Docker serve + health poll (MTP on by default) |
+| `start-local.sh` / `stop-local.sh` | Host vLLM 0.26.0 path used for the measured numbers |
+| `bench_concurrent.py` | Streaming 1 / 4 / 10 concurrent bench |
+| `bench_results.json` | MTP-on results |
+| `bench_results_mtp_off.json` | Same-day MTP-off baseline |
 
 ## License
 
-Upstream model: Apache-2.0 (see HF card). This repo is scripts/docs only.
+Upstream model: Apache-2.0 (see the Hugging Face cards). This repo is scripts and docs only.
