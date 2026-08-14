@@ -90,24 +90,48 @@ Thinking depth is `reasoning_effort`: `xhigh` (default), `medium`, or `low`.
 
 Measured on an ASUS Ascent GX10 / NVIDIA GB10, 2026-08-14.
 
-Live serve: vLLM 0.26.0, Unsloth NVFP4, MTP `k=3`, `--max-model-len 262144`, vision enabled, `--max-num-seqs 4`. Streaming chat, official sampling per mode, `max_tokens=4096`. Every run finished with `stop` (not the length cap). Throughput uses `completion_tokens`.
+Live serve: vLLM 0.26.0, Unsloth NVFP4, MTP `k=3`, `--max-model-len 262144`, vision enabled, `--max-num-seqs 4`. Streaming chat, official sampling, `max_tokens=4096`. Every request finished with `stop` (not the length cap).
 
-Same prompt for all four modes: a short technical explanation of NVFP4 on GB10, final answer under 120 words.
+Same prompt for every run: a short technical explanation of NVFP4 on GB10, final answer under 120 words.
 
-| Mode | Sampler | Success | TTFT | tok/s | Completion tokens | Reasoning chars | Content chars | Finish |
-|------|---------|--------:|-----:|------:|------------------:|----------------:|--------------:|--------|
-| Thinking off | instruct | 1/1 | 0.29s | **16.9** | 154 | 0 | 819 | `stop` |
-| Thinking `low` | thinking | 1/1 | 0.29s | **19.3** | 394 | 1,149 | 673 | `stop` |
-| Thinking `medium` | thinking | 1/1 | 0.35s | **23.5** | 1,644 | 5,034 | 759 | `stop` |
-| Thinking `xhigh` | thinking | 1/1 | 0.28s | **22.0** | 804 | 2,391 | 599 | `stop` |
+Two numbers are published:
 
-Decode speed stays in the same band across modes. What changes is how long the model thinks before it answers. `medium` produced the longest reasoning trace on this prompt.
+1. **Average single-stream decode** — five finished answers in each of the four thinking modes, then the unweighted mean of those four mode means.
+2. **Concurrent throughput** — default thinking (`enable_thinking=true`, `reasoning_effort=xhigh`) at 1 / 4 / 10 in-flight requests.
+
+### Average decode: **21.4 tok/s**
+
+Five sequential repetitions per mode, rotating mode order each round. Decode rate is `completion_tokens / (total time − TTFT)`.
+
+| Mode | Sampler | n | Mean tok/s | Median | Min | Max | Mean tokens | Finish |
+|------|---------|--:|-----------:|-------:|----:|----:|------------:|--------|
+| Thinking off | instruct | 5/5 | **18.4** | 18.7 | 17.4 | 19.6 | 146 | all `stop` |
+| Thinking `low` | thinking | 5/5 | **20.8** | 20.8 | 18.4 | 25.4 | 513 | all `stop` |
+| Thinking `medium` | thinking | 5/5 | **24.5** | 24.4 | 23.5 | 26.5 | 1,613 | all `stop` |
+| Thinking `xhigh` | thinking | 5/5 | **21.7** | 21.4 | 20.5 | 24.0 | 1,168 | all `stop` |
+| **Average of the four mode means** | | **20/20** | **21.4** | | | | | |
+
+Thinking mode changes how long the model thinks, not a hardware clock. The spread (18.4–24.5) is mostly different token trajectories under MTP, not “medium is 33% faster silicon.” The 21.4 figure is the number to quote for general single-stream speed.
+
+Raw four-mode results: [`bench_results_modes_5x.json`](./bench_results_modes_5x.json). Re-run with `./bench_modes_5x.py`.
+
+### Concurrent throughput (default thinking)
+
+Default request shape: thinking on, `reasoning_effort=xhigh`, official thinking sampler. Throughput is `completion_tokens / wall time` (aggregate = all workers’ tokens / longest worker).
+
+| Conc | Success | Avg TTFT | Aggregate tok/s | Per-stream tok/s | Avg completion tokens |
+|-----:|--------:|---------:|----------------:|-----------------:|----------------------:|
+| 1 | 1/1 | 0.28s | **20.6** | 20.6 | 777 |
+| 4 | 4/4 | 1.03s | **66.5** | 19.9 | 1,770 |
+| 10 | 10/10 | 49.8s | **59.9** | 13.7 | 1,386 |
+
+`--max-num-seqs 4` is the published serve default (256K context + vision + MTP). Four-wide is the saturated batch. Ten-wide stays up (10/10 `stop`) but extras queue, so aggregate falls and TTFT jumps.
+
+Raw concurrency results: [`bench_results_concurrent_4096.json`](./bench_results_concurrent_4096.json). Re-run with `./bench_concurrent.py`.
 
 Vision was verified on the same serve: a Statue of Liberty photo returned a correct one-sentence description (`52` completion tokens, `1,675` prompt tokens including image features).
 
 This serve advertised `max_model_len=262144`. vLLM reported **81.1 GiB** KV cache, **2,287,535** GPU KV tokens, and **8.73x** concurrency at 262,144 tokens per request.
-
-Raw four-mode results: [`bench_results_modes.json`](./bench_results_modes.json). Re-run with `./bench_modes.py`.
 
 ## Serve command
 
@@ -142,6 +166,7 @@ vLLM loads the native MTP head from `model_mtp.safetensors` and the vision encod
 - **Vision is on by default.** The NVFP4 file includes the vision tensors. `LANGUAGE_ONLY=1` drops multimodal inputs if you want a text-only process.
 - **Native context is 262,144.** YaRN to 1M is documented on the model card; do not enable it unless you actually need longer than 256K.
 - **MTP `k=3` reuses one trained draft layer.** vLLM may warn that acceptance can be lower than `k=1`.
+- **`--max-num-seqs 4` is intentional.** Raising it increases in-flight batch size but does not create more than about 8 full-256K KV slots on this serve.
 - The GPU should be mostly free before launch.
 
 ## Files
@@ -150,11 +175,11 @@ vLLM loads the native MTP head from `model_mtp.safetensors` and the vision encod
 |------|------|
 | `start.sh` / `stop.sh` | Download + Docker serve + health poll (256K, vision, MTP on) |
 | `start-local.sh` / `stop-local.sh` | Host vLLM 0.26.0 path used for the measured numbers |
-| `bench_modes.py` | Official-sampler sweep: thinking off / low / medium / xhigh |
-| `bench_results_modes.json` | Four-mode results |
-| `bench_concurrent.py` | Streaming concurrency bench |
-| `bench_results.json` | Earlier MTP-on concurrency capture |
-| `bench_results_mtp_off.json` | Earlier MTP-off concurrency capture |
+| `bench_modes_5x.py` | Five-rep official-sampler sweep: thinking off / low / medium / xhigh |
+| `bench_results_modes_5x.json` | Four-mode average decode results |
+| `bench_concurrent.py` | Default-thinking streaming concurrency bench (1 / 4 / 10) |
+| `bench_results_concurrent_4096.json` | Concurrent throughput results |
+| `bench_modes.py` | Single-pass four-mode helper used by the 5× sweep |
 
 ## License
 

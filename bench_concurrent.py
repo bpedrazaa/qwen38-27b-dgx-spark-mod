@@ -19,7 +19,7 @@ import urllib.request
 
 PROMPT = (
     "Write a concise technical explanation of what NVFP4 quantization is "
-    "and why it helps MoE inference on NVIDIA GB10. Use plain language. "
+    "and why it helps dense Transformer inference on NVIDIA GB10. Use plain language. "
     "Keep the final answer under 120 words."
 )
 
@@ -237,7 +237,7 @@ def main() -> int:
     p.add_argument("--base-url", default="http://127.0.0.1:8000")
     p.add_argument("--model", default="unsloth/Qwen3.8-27B-NVFP4")
     p.add_argument("--levels", default="1,4,10")
-    p.add_argument("--max-tokens", type=int, default=256)
+    p.add_argument("--max-tokens", type=int, default=4096)
     p.add_argument("--temperature", type=float, default=1.0)
     p.add_argument("--timeout", type=float, default=300.0)
     p.add_argument("--warmup", type=int, default=1)
