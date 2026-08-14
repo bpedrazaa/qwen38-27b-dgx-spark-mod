@@ -13,6 +13,8 @@ MAX_MODEL_LEN="${MAX_MODEL_LEN:-32768}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.70}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
 LANGUAGE_ONLY="${LANGUAGE_ONLY:-1}"
+ENABLE_MTP="${ENABLE_MTP:-1}"
+NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-3}"
 LOCAL_MODEL_DIR="${LOCAL_MODEL_DIR:-}"
 
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,6 +93,12 @@ fi
 LANG_FLAG=""
 [[ "${LANGUAGE_ONLY}" == "1" ]] && LANG_FLAG="--language-model-only"
 
+SPEC_FLAG=""
+if [[ "${ENABLE_MTP}" == "1" ]]; then
+  printf '%s\n' "{\"method\":\"mtp\",\"num_speculative_tokens\":${NUM_SPECULATIVE_TOKENS}}" > "${WORK_DIR}/.runtime/spec.json"
+  SPEC_FLAG='--speculative-config "$(cat /runtime/spec.json)"'
+fi
+
 cat > "${WORK_DIR}/.runtime/serve.sh" <<EOF
 #!/bin/bash
 set -euo pipefail
@@ -115,14 +123,15 @@ exec vllm serve ${MODEL_ARG} \\
   --enable-prefix-caching \\
   --reasoning-parser qwen3 \\
   --tool-call-parser qwen3_coder \\
-  --enable-auto-tool-choice
+  --enable-auto-tool-choice \\
+  ${SPEC_FLAG}
 EOF
 chmod +x "${WORK_DIR}/.runtime/serve.sh"
 
 echo "Pulling image ${IMAGE} (if needed)"
 docker pull "${IMAGE}" >/dev/null || true
 
-echo "Starting ${CONTAINER_NAME} on port ${PORT} (max_num_seqs=${MAX_NUM_SEQS})"
+echo "Starting ${CONTAINER_NAME} on port ${PORT} (max_num_seqs=${MAX_NUM_SEQS}, MTP=${ENABLE_MTP} k=${NUM_SPECULATIVE_TOKENS})"
 # shellcheck disable=SC2086
 docker run -d \
   --name "${CONTAINER_NAME}" \
