@@ -4,7 +4,7 @@ set -euo pipefail
 
 IMAGE="${IMAGE:-qwen38-dflash2:v0.27.1-aarch64}"
 CONTAINER_NAME="${CONTAINER_NAME:-qwen38-dflash2}"
-TARGET_MODEL="${TARGET_MODEL:-joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt}"
+TARGET_MODEL="${TARGET_MODEL:-unsloth/Qwen3.8-27B-NVFP4}"
 DRAFT_MODEL="${DRAFT_MODEL:-incoai/Qwen3.8-27B-DFlash2}"
 SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-Qwen3.8-27B}"
 TARGET_DIR="${TARGET_DIR:-}"

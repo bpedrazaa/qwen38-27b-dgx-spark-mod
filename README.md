@@ -23,21 +23,6 @@ The improvement is real but workload-dependent. Our deeper DSpark `k=14` configu
 | Fresh generation | 29.72 tok/s | **44.46 tok/s (+49.6%)** |
 | Highly copyable edit, warm | **75.46 tok/s** | 60.67 tok/s |
 
-### Uncensored target
-
-DFlash 2 also works with [`joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt`](https://huggingface.co/joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt):
-
-| Workload | Result |
-|---|---:|
-| Fresh code generation | **41.38 tok/s** |
-| Fresh draft acceptance | 53.8% |
-| Fresh tokens per target pass | 4.76 |
-| Highly copyable edit | **64.18 / 64.09 tok/s** |
-| Edit acceptance | 99.6% |
-| Edit tokens per target pass | 7.97 |
-
-Against our prior uncensored DSpark `k=14` serve, DFlash 2 is **52.7% faster** on fresh generation (41.38 vs 27.10 tok/s), while DSpark remains faster on the copy-heavy edit (84.32 vs 64.09 tok/s).
-
 Raw machine-readable data: [`bench_results_dflash2.json`](./bench_results_dflash2.json).
 
 ## Measured configuration
@@ -79,7 +64,7 @@ The Dockerfile starts from `vllm/vllm-openai:v0.27.1-aarch64` and applies the ru
 
 It also removes one overly broad type guard in the PR. The measured Qwen NVFP4 checkpoint is quantized overall, but the DFlash-facing `lm_head` weight is BF16/unquantized; candidate TopK works correctly after removing that false rejection. The patch is explicit and inspectable in [`Dockerfile.dflash2`](./Dockerfile.dflash2).
 
-### 2. Start the uncensored NVFP4 target
+### 2. Start the standard NVFP4 target
 
 ```bash
 export HF_TOKEN=hf_your_token
@@ -88,7 +73,7 @@ export HF_TOKEN=hf_your_token
 
 Defaults:
 
-- target: `joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt`
+- target: `unsloth/Qwen3.8-27B-NVFP4`
 - drafter: `incoai/Qwen3.8-27B-DFlash2`
 - API model name: `Qwen3.8-27B`
 - context: 262,144
@@ -99,7 +84,7 @@ Defaults:
 The script can use Hugging Face model IDs through its mounted cache, or already-downloaded directories:
 
 ```bash
-TARGET_DIR=$HOME/llm/qwen38-27b-uncensored-nvfp4 \
+TARGET_DIR=$HOME/llm/qwen38-27b-nvfp4 \
 DRAFT_DIR=$HOME/llm/qwen38-dflash2 \
 ./start-dflash2.sh
 ```
@@ -235,7 +220,7 @@ Raw files:
 | `dflash2-vllm.patch` | Pinned runtime patch from upstream vLLM PR `#52816` |
 | `start-dflash2.sh` / `stop-dflash2.sh` | DFlash 2 deployment with health polling and persistence |
 | `bench_speculation.py` | Fresh-generation and copy-heavy speculation benchmark |
-| `bench_results_dflash2.json` | Measured DFlash 2, DSpark, and uncensored-target results |
+| `bench_results_dflash2.json` | Measured DFlash 2 and DSpark benchmark results |
 | `start.sh` / `stop.sh` | Legacy Docker native-MTP deployment |
 | `start-local.sh` / `stop-local.sh` | Legacy host-vLLM native-MTP deployment |
 | `bench_modes_5x.py` | Historical official-sampler reasoning-mode sweep |
@@ -243,7 +228,7 @@ Raw files:
 
 ## Notes
 
-- DFlash 2 requires a compatible target tokenizer and architecture. A fine-tune can work, as the uncensored target did here, but test acceptance and output correctness before treating an arbitrary checkpoint as compatible.
+- DFlash 2 requires a compatible target tokenizer and architecture. Fine-tunes and other compatible checkpoints can also work, but test draft acceptance and output correctness before treating an arbitrary checkpoint as compatible.
 - First launch downloads both models and compiles kernels. It can take several minutes.
 - The full 262K setting reserves substantial KV cache. Lower `MAX_MODEL_LEN` if you need more memory headroom or are comparing drafters under a smaller fixed context.
 - Keep `k` fixed when comparing draft methods. Comparing DFlash 2 `k=7` directly to DSpark `k=14` answers a deployment question, not a drafter-quality question.
