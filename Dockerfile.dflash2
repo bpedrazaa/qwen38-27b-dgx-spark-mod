@@ -1,0 +1,26 @@
+# vLLM 0.27.1 for Linux/aarch64 with Inco DFlash 2 support.
+# The patch is pinned to upstream vLLM PR #52816 commit 19c9351904df4c63042671bc67a866ca48dc7d6f.
+FROM vllm/vllm-openai:v0.27.1-aarch64
+
+USER root
+COPY dflash2-vllm.patch /tmp/dflash2-vllm.patch
+RUN set -eux; \
+    cd /usr/local/lib/python3.12/dist-packages; \
+    patch -p1 < /tmp/dflash2-vllm.patch; \
+    python3 - <<'PY'
+p = "/usr/local/lib/python3.12/dist-packages/vllm/model_executor/models/qwen3_dflash2.py"
+s = open(p).read()
+# The Qwen3.8 NVFP4 checkpoint has a quantized model overall but its draft-facing
+# lm_head is BF16. The upstream type guard rejects the wrapper before inspecting
+# the actual weight. Removing the guard is the measured GB10 compatibility fix.
+old = '''        if not isinstance(self.lm_head.quant_method, UnquantizedEmbeddingMethod):
+            raise ValueError(
+                "DFlash2 requires an unquantized target LM head for candidate TopK."
+            )
+
+'''
+if old not in s:
+    raise SystemExit("expected DFlash2 lm_head guard was not found")
+open(p, "w").write(s.replace(old, ""))
+PY
+RUN rm -f /tmp/dflash2-vllm.patch

@@ -1,0 +1,49 @@
+{
+  "date": "2026-08-18",
+  "hardware": "NVIDIA DGX Spark / GB10",
+  "runtime": "vLLM 0.27.1 plus DFlash 2 PR 52816",
+  "target_standard": "Qwen3.8-27B NVFP4",
+  "target_uncensored": "joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt",
+  "draft_dflash2": "incoai/Qwen3.8-27B-DFlash2",
+  "draft_dspark": "RadixArk/Qwen3.8-27B-DSpark",
+  "configuration": {
+    "num_speculative_tokens": 7,
+    "max_model_len": 32768,
+    "prefix_caching": false,
+    "temperature": 0,
+    "fresh_max_tokens": 400,
+    "edit_max_tokens": 3000
+  },
+  "standard_target_k7": {
+    "dflash2": {
+      "fresh_code_tok_s": 44.46,
+      "fresh_acceptance_pct": 64.4,
+      "fresh_tokens_per_target_pass": 5.51,
+      "edit_tok_s": [60.92, 60.67],
+      "edit_acceptance_pct": 99.3,
+      "edit_tokens_per_target_pass": 7.95
+    },
+    "dspark": {
+      "fresh_code_tok_s": 31.95,
+      "fresh_acceptance_pct": 41.1,
+      "fresh_tokens_per_target_pass": 3.87,
+      "edit_tok_s": [60.91, 60.79],
+      "edit_acceptance_pct": 98.5,
+      "edit_tokens_per_target_pass": 7.89
+    }
+  },
+  "uncensored_target_dflash2_k7": {
+    "fresh_code_tok_s": 41.38,
+    "fresh_acceptance_pct": 53.8,
+    "fresh_tokens_per_target_pass": 4.76,
+    "edit_tok_s": [64.18, 64.09],
+    "edit_acceptance_pct": 99.6,
+    "edit_tokens_per_target_pass": 7.97
+  },
+  "prior_k14_reference": {
+    "standard_dspark_fresh_code_tok_s": 29.72,
+    "standard_dspark_edit_warm_tok_s": 75.46,
+    "uncensored_dspark_fresh_code_tok_s": 27.10,
+    "uncensored_dspark_edit_warm_tok_s": 84.32
+  }
+}

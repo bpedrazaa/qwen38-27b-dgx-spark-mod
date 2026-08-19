@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 MODEL_DIR="${MODEL_DIR:-$HOME/llm/qwen38-27b-nvfp4}"
-MODEL_ID="${MODEL_ID:-unsloth/Qwen3.8-27B-NVFP4}"
+MODEL_ID="${MODEL_ID:-Qwen3.8-27B}"
 PORT="${PORT:-8000}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
 MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"

@@ -1,186 +1,254 @@
-# Qwen 3.8 27B on DGX Spark
+# Qwen 3.8 27B + DFlash 2 on DGX Spark
 
-Run [Qwen 3.8 27B](https://huggingface.co/Qwen/Qwen3.8-27B) on a single NVIDIA GB10 using the [Unsloth NVFP4](https://huggingface.co/unsloth/Qwen3.8-27B-NVFP4) checkpoint and vLLM.
+Run Qwen 3.8 27B on one NVIDIA GB10 with [Inco DFlash 2](https://inco.ai/blog/dflash2/) speculative decoding, 262K context, vision, reasoning controls, and tool calling.
 
-This repo is a deploy package: start/stop scripts, a measured serve command, and GB10 benchmarks. It does not republish model weights.
+This is a public deployment package, not a weight mirror. It contains the pinned vLLM compatibility patch, Docker build, start/stop scripts, a reproducible speculation benchmark, and measured DGX Spark results.
 
-Qwen 3.8 27B is a native vision-language model: dense 27B hybrid (Gated DeltaNet + full attention), 262,144-token context, trained MTP, and per-request thinking control (`enable_thinking` plus `reasoning_effort` of `xhigh` / `medium` / `low`). Official BF16 is about 52 GiB. The Unsloth NVFP4 build is about 22.5 GiB plus 0.81 GiB of MTP weights, which fits a 121 GiB GB10 with room for native context, vision, and speculation.
+## Result
 
-## Defaults
+DFlash 2 is the best default we measured for ordinary, unpredictable generation. On the same standard Qwen3.8-27B NVFP4 target, prompt, sampling, and `k=7` configuration:
+
+| Workload | DSpark `k=7` | DFlash 2 `k=7` | Difference |
+|---|---:|---:|---:|
+| Fresh code generation | 31.95 tok/s | **44.46 tok/s** | **+39.2%** |
+| Draft acceptance | 41.1% | **64.4%** | +23.3 points |
+| Tokens per target pass | 3.87 | **5.51** | **+42.4%** |
+| Highly copyable edit | 60.91 tok/s | **60.92 tok/s** | tied |
+| Edit acceptance | 98.5% | **99.3%** | +0.8 points |
+
+The improvement is real but workload-dependent. Our deeper DSpark `k=14` configuration remains faster when output is almost entirely copied from the prompt:
+
+| Standard target | DSpark `k=14` | DFlash 2 `k=7` |
+|---|---:|---:|
+| Fresh generation | 29.72 tok/s | **44.46 tok/s (+49.6%)** |
+| Highly copyable edit, warm | **75.46 tok/s** | 60.67 tok/s |
+
+### Uncensored target
+
+DFlash 2 also works with [`joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt`](https://huggingface.co/joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt):
+
+| Workload | Result |
+|---|---:|
+| Fresh code generation | **41.38 tok/s** |
+| Fresh draft acceptance | 53.8% |
+| Fresh tokens per target pass | 4.76 |
+| Highly copyable edit | **64.18 / 64.09 tok/s** |
+| Edit acceptance | 99.6% |
+| Edit tokens per target pass | 7.97 |
+
+Against our prior uncensored DSpark `k=14` serve, DFlash 2 is **52.7% faster** on fresh generation (41.38 vs 27.10 tok/s), while DSpark remains faster on the copy-heavy edit (84.32 vs 64.09 tok/s).
+
+Raw machine-readable data: [`bench_results_dflash2.json`](./bench_results_dflash2.json).
+
+## Measured configuration
 
 | Item | Value |
-|------|--------|
-| GPU | NVIDIA GB10 |
-| Image | `eugr/spark-vllm:latest` |
-| Measured runtime | vLLM 0.26.0 |
-| Quantization | `compressed-tensors` (NVFP4) |
-| Context | `--max-model-len 262144` |
-| Vision | on (`image` + `video`) |
-| Concurrency | `--max-num-seqs 4` |
-| Speculative decoding | MTP, `k=3` |
+|---|---|
+| Hardware | NVIDIA DGX Spark / GB10 |
+| Runtime | vLLM 0.27.1 + upstream DFlash 2 PR `#52816` |
+| Target quantization | NVFP4 / compressed-tensors |
+| DFlash 2 drafter | `incoai/Qwen3.8-27B-DFlash2` |
+| Speculative block | `k=7`, probabilistic sampling |
+| Served model name | `Qwen3.8-27B` |
+| Native context | 262,144 tokens |
+| Max sequences | 10 |
+| Max batched tokens | 16,384 |
+| GPU memory utilization | 0.85 |
+| Vision | enabled, up to 2 images per prompt |
+| Reasoning parser | `qwen3` |
+| Tool parser | `qwen3_xml` |
+| Prefix cache | enabled for the deployment; disabled for fair drafter benchmarks |
 | Port | 8000 |
-
-Thinking is on by default (`reasoning_effort=xhigh`). Disable it per request with `chat_template_kwargs.enable_thinking = false`. Start without MTP with `ENABLE_MTP=0 ./start.sh`. Start text-only with `LANGUAGE_ONLY=1 ./start.sh`.
 
 ## Quick start
 
-```bash
-hf download unsloth/Qwen3.8-27B-NVFP4 --local-dir ~/llm/qwen38-27b-nvfp4
+Requirements: an aarch64 DGX Spark/GB10 host with NVIDIA Container Toolkit, Docker, and enough free unified memory for the target and drafter.
 
-./start.sh
-# optional overrides:
-# MAX_NUM_SEQS=1 MAX_MODEL_LEN=32768 ENABLE_MTP=0 LANGUAGE_ONLY=1 ./start.sh
-./stop.sh
+### 1. Build the DFlash 2 vLLM image
+
+```bash
+git clone https://github.com/gitcommit90/qwen38-27b-dgx-spark
+cd qwen38-27b-dgx-spark
+
+docker build \
+  -f Dockerfile.dflash2 \
+  -t qwen38-dflash2:v0.27.1-aarch64 .
 ```
 
-`./start.sh` pulls `eugr/spark-vllm:latest` and serves the model in Docker. If you already have vLLM 0.26.0 on the host, `./start-local.sh` uses the same flags.
+The Dockerfile starts from `vllm/vllm-openai:v0.27.1-aarch64` and applies the runtime portion of upstream vLLM PR `#52816`, pinned to commit `19c9351904df4c63042671bc67a866ca48dc7d6f`.
 
-Text smoke:
+It also removes one overly broad type guard in the PR. The measured Qwen NVFP4 checkpoint is quantized overall, but the DFlash-facing `lm_head` weight is BF16/unquantized; candidate TopK works correctly after removing that false rejection. The patch is explicit and inspectable in [`Dockerfile.dflash2`](./Dockerfile.dflash2).
+
+### 2. Start the uncensored NVFP4 target
 
 ```bash
-curl -s http://127.0.0.1:8000/v1/models
+export HF_TOKEN=hf_your_token
+./start-dflash2.sh
+```
 
+Defaults:
+
+- target: `joshebbs/qwen3.8-27b-uncensored-nvfp4-modelopt`
+- drafter: `incoai/Qwen3.8-27B-DFlash2`
+- API model name: `Qwen3.8-27B`
+- context: 262,144
+- `k=7`
+- binds `0.0.0.0:8000`
+- restart policy: `unless-stopped`
+
+The script can use Hugging Face model IDs through its mounted cache, or already-downloaded directories:
+
+```bash
+TARGET_DIR=$HOME/llm/qwen38-27b-uncensored-nvfp4 \
+DRAFT_DIR=$HOME/llm/qwen38-dflash2 \
+./start-dflash2.sh
+```
+
+Use a different compatible target with `TARGET_MODEL` or `TARGET_DIR`:
+
+```bash
+TARGET_MODEL=your-org/your-qwen38-27b-nvfp4 ./start-dflash2.sh
+```
+
+Stop it with:
+
+```bash
+./stop-dflash2.sh
+```
+
+### Useful overrides
+
+```bash
+MAX_MODEL_LEN=32768 \
+MAX_NUM_SEQS=4 \
+GPU_MEM_UTIL=0.85 \
+NUM_SPECULATIVE_TOKENS=7 \
+PORT=8000 \
+./start-dflash2.sh
+```
+
+For a custom chat template:
+
+```bash
+CHAT_TEMPLATE=$PWD/chat_template.jinja ./start-dflash2.sh
+```
+
+## API checks
+
+Text:
+
+```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
-    "model": "unsloth/Qwen3.8-27B-NVFP4",
-    "messages": [{"role":"user","content":"Say hi in one sentence."}],
-    "max_tokens": 64,
-    "temperature": 0.7,
-    "top_p": 0.8,
-    "presence_penalty": 1.5,
-    "top_k": 20,
-    "min_p": 0.0,
-    "repetition_penalty": 1.0,
+    "model": "Qwen3.8-27B",
+    "messages": [{"role":"user","content":"Reply with exactly: DFLASH2 OK"}],
+    "max_tokens": 32,
+    "temperature": 0,
     "chat_template_kwargs": {"enable_thinking": false}
   }'
 ```
 
-Vision smoke:
+Reasoning depth is controlled per request with `chat_template_kwargs.enable_thinking` and `reasoning_effort` (`low`, `medium`, or `xhigh`).
+
+Tool calling:
 
 ```bash
 curl -s http://127.0.0.1:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
+  -H 'Content-Type: application/json' \
   -d '{
-    "model": "unsloth/Qwen3.8-27B-NVFP4",
-    "messages": [{
-      "role": "user",
-      "content": [
-        {"type": "text", "text": "Describe this image in one sentence."},
-        {"type": "image_url", "image_url": {"url": "https://cdn.britannica.com/61/93061-050-99147DCE/Statue-of-Liberty-Island-New-York-Bay.jpg"}}
-      ]
+    "model": "Qwen3.8-27B",
+    "messages": [{"role":"user","content":"What is the weather in Seattle?"}],
+    "tools": [{
+      "type":"function",
+      "function": {
+        "name":"get_weather",
+        "description":"Get current weather",
+        "parameters": {
+          "type":"object",
+          "properties":{"city":{"type":"string"}},
+          "required":["city"]
+        }
+      }
     }],
-    "max_tokens": 64,
-    "chat_template_kwargs": {"enable_thinking": false}
+    "max_tokens": 128
   }'
 ```
 
-## Official sampling
+Vision uses standard OpenAI-compatible `image_url` message content. The measured serve correctly handled image input with `--limit-mm-per-prompt.image 2`.
 
-From the [Qwen 3.8 27B model card](https://huggingface.co/Qwen/Qwen3.8-27B):
+## Reproduce the DFlash 2 benchmark
 
-| Mode | temperature | top_p | top_k | min_p | presence_penalty | repetition_penalty |
-|------|------------:|------:|------:|------:|-----------------:|-------------------:|
-| Thinking | 1.0 | 0.95 | 20 | 0.0 | 0.0 | 1.0 |
-| Instruct / thinking off | 0.7 | 0.80 | 20 | 0.0 | 1.5 | 1.0 |
+The fair DFlash 2 vs DSpark comparison used:
 
-Thinking depth is `reasoning_effort`: `xhigh` (default), `medium`, or `low`.
+- same standard NVFP4 target
+- same prompts and output lengths
+- `k=7` for both drafters
+- 32K context
+- prefix caching disabled
+- temperature 0
+- one fresh-generation workload
+- one deliberately copy-heavy edit workload, repeated twice
 
-## Benchmarks
-
-Measured on an ASUS Ascent GX10 / NVIDIA GB10, 2026-08-14.
-
-Live serve: vLLM 0.26.0, Unsloth NVFP4, MTP `k=3`, `--max-model-len 262144`, vision enabled, `--max-num-seqs 4`. Streaming chat, official sampling, `max_tokens=4096`. Every request finished with `stop` (not the length cap).
-
-Same prompt for every run: a short technical explanation of NVFP4 on GB10, final answer under 120 words.
-
-Two numbers are published:
-
-1. **Average single-stream decode** — five finished answers in each of the four thinking modes, then the unweighted mean of those four mode means.
-2. **Concurrent throughput** — default thinking (`enable_thinking=true`, `reasoning_effort=xhigh`) at 1 / 4 / 10 in-flight requests.
-
-### Average decode: **21.4 tok/s**
-
-Five sequential repetitions per mode, rotating mode order each round. Decode rate is `completion_tokens / (total time − TTFT)`.
-
-| Mode | Sampler | n | Mean tok/s | Median | Min | Max | Mean tokens | Finish |
-|------|---------|--:|-----------:|-------:|----:|----:|------------:|--------|
-| Thinking off | instruct | 5/5 | **18.4** | 18.7 | 17.4 | 19.6 | 146 | all `stop` |
-| Thinking `low` | thinking | 5/5 | **20.8** | 20.8 | 18.4 | 25.4 | 513 | all `stop` |
-| Thinking `medium` | thinking | 5/5 | **24.5** | 24.4 | 23.5 | 26.5 | 1,613 | all `stop` |
-| Thinking `xhigh` | thinking | 5/5 | **21.7** | 21.4 | 20.5 | 24.0 | 1,168 | all `stop` |
-| **Average of the four mode means** | | **20/20** | **21.4** | | | | | |
-
-Thinking mode changes how long the model thinks, not a hardware clock. The spread (18.4–24.5) is mostly different token trajectories under MTP, not “medium is 33% faster silicon.” The 21.4 figure is the number to quote for general single-stream speed.
-
-Raw four-mode results: [`bench_results_modes_5x.json`](./bench_results_modes_5x.json). Re-run with `./bench_modes_5x.py`.
-
-### Concurrent throughput (default thinking)
-
-Default request shape: thinking on, `reasoning_effort=xhigh`, official thinking sampler. Throughput is `completion_tokens / wall time` (aggregate = all workers’ tokens / longest worker).
-
-| Conc | Success | Avg TTFT | Aggregate tok/s | Per-stream tok/s | Avg completion tokens |
-|-----:|--------:|---------:|----------------:|-----------------:|----------------------:|
-| 1 | 1/1 | 0.28s | **20.6** | 20.6 | 777 |
-| 4 | 4/4 | 1.03s | **66.5** | 19.9 | 1,770 |
-| 10 | 10/10 | 49.8s | **59.9** | 13.7 | 1,386 |
-
-`--max-num-seqs 4` is the published serve default (256K context + vision + MTP). Four-wide is the saturated batch. Ten-wide stays up (10/10 `stop`) but extras queue, so aggregate falls and TTFT jumps.
-
-Raw concurrency results: [`bench_results_concurrent_4096.json`](./bench_results_concurrent_4096.json). Re-run with `./bench_concurrent.py`.
-
-Vision was verified on the same serve: a Statue of Liberty photo returned a correct one-sentence description (`52` completion tokens, `1,675` prompt tokens including image features).
-
-This serve advertised `max_model_len=262144`. vLLM reported **81.1 GiB** KV cache, **2,287,535** GPU KV tokens, and **8.73x** concurrency at 262,144 tokens per request.
-
-## Serve command
+Run:
 
 ```bash
-vllm serve /models/qwen38-27b-nvfp4 \
-  --served-model-name unsloth/Qwen3.8-27B-NVFP4 \
-  --host 0.0.0.0 --port 8000 \
-  --tensor-parallel-size 1 \
-  --trust-remote-code \
-  --quantization compressed-tensors \
-  --max-model-len 262144 \
-  --max-num-seqs 4 \
-  --max-num-batched-tokens 16384 \
-  --gpu-memory-utilization 0.90 \
-  --enable-chunked-prefill \
-  --enable-prefix-caching \
-  --reasoning-parser qwen3 \
-  --tool-call-parser qwen3_coder \
-  --enable-auto-tool-choice \
-  --limit-mm-per-prompt '{"image":4,"video":1}' \
-  --media-io-kwargs '{"video":{"num_frames":-1}}' \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":3}'
+python3 bench_speculation.py http://127.0.0.1:8000/v1 Qwen3.8-27B
 ```
 
-vLLM loads the native MTP head from `model_mtp.safetensors` and the vision encoder from the same NVFP4 checkpoint.
+The script reads vLLM's `/metrics` counters and reports:
 
-## Notes
+- output tok/s
+- accepted draft-token percentage
+- mean emitted tokens per target-model pass
 
-- **Use the NVFP4 checkpoint.** Official BF16 is ~52 GiB and does not leave enough unified-memory headroom on a 121 GiB GB10.
-- **First boot can take several minutes.** FlashInfer / Triton compile and autotune on the first launch. If the API is not up after ~10 minutes, check `docker logs` (or the local vLLM log) before assuming it hung.
-- **Host vLLM needs `ninja`.** FlashInfer's sampling JIT fails during warmup unless `ninja-build` is on `PATH` (`sudo apt install ninja-build`).
-- **Vision is on by default.** The NVFP4 file includes the vision tensors. `LANGUAGE_ONLY=1` drops multimodal inputs if you want a text-only process.
-- **Native context is 262,144.** YaRN to 1M is documented on the model card; do not enable it unless you actually need longer than 256K.
-- **MTP `k=3` reuses one trained draft layer.** vLLM may warn that acceptance can be lower than `k=1`.
-- **`--max-num-seqs 4` is intentional.** Raising it increases in-flight batch size but does not create more than about 8 full-256K KV slots on this serve.
-- The GPU should be mostly free before launch.
+Do not generalize the edit-heavy number to all generation. It is intentionally favorable to speculative decoding because nearly the entire answer already appears in the prompt. Fresh generation is the more representative result for ordinary coding and agent work.
+
+## DFlash 2 vs MTP and DSpark
+
+- **DFlash 2 `k=7`** is the recommended default for general generation on this setup.
+- **DSpark `k=14`** remains useful for highly predictable rewrites, boilerplate, and copy-heavy edits.
+- **Native MTP `k=3`** needs no external drafter and remains the simplest fallback.
+
+The older MTP deployment scripts remain available as `start.sh` / `stop.sh`. Their historical GB10 benchmark files are retained in this repository for comparison.
+
+## Previous native-MTP measurements
+
+Before DFlash 2, Qwen3.8-27B NVFP4 was measured with vLLM 0.26.0, native MTP `k=3`, 262K context, vision, and `--max-num-seqs 4`:
+
+- four-mode average single-stream decode: **21.4 tok/s**
+- default-thinking aggregate at 4 concurrent requests: **66.5 tok/s**
+- all 20 four-mode requests finished with `stop`
+- native 262K context and vision were verified
+
+Raw files:
+
+- [`bench_results_modes_5x.json`](./bench_results_modes_5x.json)
+- [`bench_results_concurrent_4096.json`](./bench_results_concurrent_4096.json)
+- [`bench_results_mtp_off.json`](./bench_results_mtp_off.json)
 
 ## Files
 
 | File | Role |
-|------|------|
-| `start.sh` / `stop.sh` | Download + Docker serve + health poll (256K, vision, MTP on) |
-| `start-local.sh` / `stop-local.sh` | Host vLLM 0.26.0 path used for the measured numbers |
-| `bench_modes_5x.py` | Five-rep official-sampler sweep: thinking off / low / medium / xhigh |
-| `bench_results_modes_5x.json` | Four-mode average decode results |
-| `bench_concurrent.py` | Default-thinking streaming concurrency bench (1 / 4 / 10) |
-| `bench_results_concurrent_4096.json` | Concurrent throughput results |
-| `bench_modes.py` | Single-pass four-mode helper used by the 5× sweep |
+|---|---|
+| `Dockerfile.dflash2` | Reproducible aarch64 vLLM 0.27.1 + DFlash 2 image |
+| `dflash2-vllm.patch` | Pinned runtime patch from upstream vLLM PR `#52816` |
+| `start-dflash2.sh` / `stop-dflash2.sh` | DFlash 2 deployment with health polling and persistence |
+| `bench_speculation.py` | Fresh-generation and copy-heavy speculation benchmark |
+| `bench_results_dflash2.json` | Measured DFlash 2, DSpark, and uncensored-target results |
+| `start.sh` / `stop.sh` | Legacy Docker native-MTP deployment |
+| `start-local.sh` / `stop-local.sh` | Legacy host-vLLM native-MTP deployment |
+| `bench_modes_5x.py` | Historical official-sampler reasoning-mode sweep |
+| `bench_concurrent.py` | Historical 1/4/10 concurrency benchmark |
+
+## Notes
+
+- DFlash 2 requires a compatible target tokenizer and architecture. A fine-tune can work, as the uncensored target did here, but test acceptance and output correctness before treating an arbitrary checkpoint as compatible.
+- First launch downloads both models and compiles kernels. It can take several minutes.
+- The full 262K setting reserves substantial KV cache. Lower `MAX_MODEL_LEN` if you need more memory headroom or are comparing drafters under a smaller fixed context.
+- Keep `k` fixed when comparing draft methods. Comparing DFlash 2 `k=7` directly to DSpark `k=14` answers a deployment question, not a drafter-quality question.
+- The target model remains authoritative. Lossless speculative decoding accelerates output without replacing target-model token probabilities.
 
 ## License
 
-Upstream model: Apache-2.0 (see the Hugging Face cards). This repo is scripts and docs only.
+The deployment code and documentation in this repository do not redistribute weights. Follow the licenses on the target and drafter Hugging Face repositories. vLLM is Apache-2.0.

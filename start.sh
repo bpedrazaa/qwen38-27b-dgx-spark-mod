@@ -4,6 +4,7 @@
 set -euo pipefail
 
 MODEL_ID="${MODEL_ID:-unsloth/Qwen3.8-27B-NVFP4}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-Qwen3.8-27B}"
 IMAGE="${IMAGE:-eugr/spark-vllm:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-qwen38-27b-nvfp4}"
 HOST="${HOST:-0.0.0.0}"
@@ -115,7 +116,7 @@ export TRITON_CACHE_DIR=/tmp/triton_cache
 export TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor_cache
 mkdir -p /tmp/vllm_cache /tmp/triton_cache /tmp/torchinductor_cache
 exec vllm serve ${MODEL_ARG} \\
-  --served-model-name ${MODEL_ID} \\
+  --served-model-name ${SERVED_MODEL_NAME} \\
   --host ${HOST} \\
   --port ${PORT} \\
   ${LANG_FLAG} \\
