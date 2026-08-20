@@ -19,6 +19,7 @@ NUM_SPECULATIVE_TOKENS="${NUM_SPECULATIVE_TOKENS:-3}"
 LIMIT_MM_PER_PROMPT="${LIMIT_MM_PER_PROMPT:-{\"image\":4,\"video\":1}}"
 MEDIA_IO_KWARGS="${MEDIA_IO_KWARGS:-{\"video\":{\"num_frames\":-1}}}"
 LOCAL_MODEL_DIR="${LOCAL_MODEL_DIR:-}"
+READY_TIMEOUT_S="${READY_TIMEOUT_S:-1200}"
 
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HF_HOME="${HF_HOME:-${WORK_DIR}/.cache/huggingface}"
@@ -162,8 +163,8 @@ docker run -d \
 
 docker inspect -f "{{.State.Pid}}" "${CONTAINER_NAME}" > "${PID_FILE}" || true
 
-echo "Waiting for ${READY_URL}"
-for i in $(seq 1 120); do
+echo "Waiting for ${READY_URL} (up to ${READY_TIMEOUT_S}s)"
+for i in $(seq 1 $((READY_TIMEOUT_S / 5))); do
   if curl -fsS "${READY_URL}" >/dev/null 2>&1; then
     echo "Ready after ~$((i * 5))s"
     curl -sS "${READY_URL}"
