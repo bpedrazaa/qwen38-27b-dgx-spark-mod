@@ -8,10 +8,10 @@ SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-Qwen3.8-27B}"
 IMAGE="${IMAGE:-eugr/spark-vllm:latest}"
 CONTAINER_NAME="${CONTAINER_NAME:-qwen38-27b-nvfp4}"
 HOST="${HOST:-0.0.0.0}"
-PORT="${PORT:-8000}"
-MAX_NUM_SEQS="${MAX_NUM_SEQS:-4}"
+PORT="${PORT:-8001}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-7}"
 MAX_MODEL_LEN="${MAX_MODEL_LEN:-262144}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.85}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-16384}"
 LANGUAGE_ONLY="${LANGUAGE_ONLY:-0}"
 ENABLE_MTP="${ENABLE_MTP:-1}"
@@ -22,13 +22,15 @@ LOCAL_MODEL_DIR="${LOCAL_MODEL_DIR:-}"
 
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HF_HOME="${HF_HOME:-${WORK_DIR}/.cache/huggingface}"
+COMPILE_CACHE_DIR="${COMPILE_CACHE_DIR:-${WORK_DIR}/.cache/compile}"
 PID_FILE="${WORK_DIR}/.vllm.pid"
 READY_URL="http://127.0.0.1:${PORT}/v1/models"
 
 command -v docker >/dev/null 2>&1 || { echo "docker is not on PATH"; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "curl is not on PATH"; exit 1; }
 
-mkdir -p "${HF_HOME}" "${WORK_DIR}/.runtime"
+mkdir -p "${HF_HOME}" "${WORK_DIR}/.runtime" \
+  "${COMPILE_CACHE_DIR}/vllm" "${COMPILE_CACHE_DIR}/triton" "${COMPILE_CACHE_DIR}/torchinductor"
 
 if docker ps --format "{{.Names}}" | grep -qx "${CONTAINER_NAME}"; then
   echo "Container ${CONTAINER_NAME} is already running."
@@ -151,6 +153,9 @@ docker run -d \
   -e HF_HOME=/cache/huggingface \
   -v "${HF_HOME}:/cache/huggingface" \
   -v "${WORK_DIR}/.runtime:/runtime:ro" \
+  -v "${COMPILE_CACHE_DIR}/vllm:/tmp/vllm_cache" \
+  -v "${COMPILE_CACHE_DIR}/triton:/tmp/triton_cache" \
+  -v "${COMPILE_CACHE_DIR}/torchinductor:/tmp/torchinductor_cache" \
   ${MODEL_MOUNT} \
   "${IMAGE}" \
   bash /runtime/serve.sh >/dev/null
